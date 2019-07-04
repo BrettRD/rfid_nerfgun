@@ -19,7 +19,10 @@ char mqtt_host_string[50];
 
 MQTTClient mqtt;
 
-int ss_pin = D1;
+int ss_pin = D0;
+int mot_a = D2;
+int mot_b = D1;
+
 
 PN532_SPI intf(SPI, ss_pin);
 PN532 nfc = PN532(intf);
@@ -61,6 +64,8 @@ void cb_onConnect()
 {
   Serial.printf("MQTT reconnected\n");
   mqtt.publish(pubTopic, "{\"online\":true}", 0, 0);
+  mqtt.subscribe("power", 0);
+
 }
 
 void cb_onDisconnect()
@@ -73,6 +78,17 @@ void cb_onDisconnect()
 
 void cb_onData(String topic, String data, bool cont)
 {
+    Serial.println(topic);
+    Serial.println(data);
+    
+    if(topic == "power")
+    {
+        int power = data.toInt();
+        //if(power>255) power=255;
+        if(power<0) power = 0;
+        analogWrite(mot_a, power);
+        digitalWrite(mot_b, LOW);
+    }
 }
 
 
@@ -116,7 +132,10 @@ void setup(void)
     //choose the names to use
     sprintf(mqtt_host_string, "mqtt://%s:%s#$s", broker_url, "1883", client_id);
 
-
+    pinMode(mot_a, OUTPUT);
+    pinMode(mot_b, OUTPUT);
+    digitalWrite(mot_a, LOW);
+    digitalWrite(mot_b, LOW);
 
     pinMode(ss_pin, OUTPUT);
     SPI.begin();
@@ -157,10 +176,14 @@ void loop(void)
     {
         if(uidLength == 7)
         {
+            analogWrite(mot_a, 50);
+            digitalWrite(mot_b, LOW);
+
             publishTag();
 
             Serial.print("uid = ");
-            for(uint8_t i=0; i<uidLength; i++){
+            for(uint8_t i=0; i<uidLength; i++)
+            {
                 Serial.print("0123456789abcdef"[uid[i] >> 4]);
                 Serial.print("0123456789abcdef"[(uid[i] & 0x0f)]);
             }
