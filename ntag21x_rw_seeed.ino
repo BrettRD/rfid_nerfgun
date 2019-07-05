@@ -38,9 +38,10 @@ char uid_hex[20];       //format to hex
 uint8_t uidLength;
 
 // change this during setup, examples here
-char client_id[20] = "nerfgun";
-char pubTopic[20] = "nerfgun/lwt";
-char tagTopic[20] = "nerfgun/tag";
+char client_id[30] = "testgun";
+char pubTopic[60] = "nerfgun/testgun/lwt";
+char tagTopic[60] = "nerfgun/testgun/state";
+char subTopic[60] = "nerfgun/testgun/power";
 
 char jsonString[100]; //to store the formatted json
 
@@ -49,7 +50,7 @@ unsigned long last_wifi_reconnect_attempt = 0;
 
 void wifiConnect()
 {
-  WiFi.hostname("esp8266");
+  WiFi.hostname(client_id);
   WiFi.mode(WIFI_STA);
   WiFi.begin(ap_name, ap_pass);
 
@@ -68,10 +69,10 @@ void cb_onSubscribe(int sub_id)
 
 void cb_onConnect()
 {
-  Serial.printf("MQTT reconnected\n");
-  mqtt.publish(pubTopic, "{\"online\":true}", 0, 0);
-  mqtt.subscribe("power", 0);
-
+    Serial.printf("MQTT reconnected\n");
+    mqtt.publish("nerfgun/name", client_id, 0, 0);
+    mqtt.publish(pubTopic, "{\"online\":true}", 0, 0);
+    mqtt.subscribe(subTopic, 0);
 }
 
 void cb_onDisconnect()
@@ -87,7 +88,7 @@ void cb_onData(String topic, String data, bool cont)
     Serial.println(topic);
     Serial.println(data);
     
-    if(topic == "power")
+    if(topic == subTopic)
     {
         int power = data.toInt();
         //if(power>255) power=255;
@@ -146,6 +147,10 @@ void publishTag(uint8_t* uid, bool interlock, int rail_voltage)
 void setup(void)
 {
     //choose the names to use
+    sprintf(client_id, "nerf%06X", ESP.getChipId());
+    sprintf(pubTopic,"nerfgun/%s/lwt", client_id);
+    sprintf(subTopic,"nerfgun/%s/power", client_id);
+    sprintf(tagTopic, "nerfgun/%s/state", client_id);
     sprintf(mqtt_host_string, "mqtt://%s:%s#$s", broker_url, "1883", client_id);
 
     pinMode(mot_a, OUTPUT);
