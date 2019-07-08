@@ -10,7 +10,6 @@ if the wrong dart is fired, the gun jams
 #include <PN532.h>
 #include <NfcAdapter.h>
 
-
 #include <ESP8266WiFi.h>
 #include <ESP8266WiFiMulti.h>
 
@@ -41,9 +40,23 @@ uint32_t report_period = 1000;
 uint32_t report_time = 0;
 
 
+bool mode_register_darts = false;
 bool motor_jam = false;   //game mechanic, brake the flywheel
 int motor_power_max = 700;
 int motor_power = 0;
+
+
+const int max_darts = 30;
+int n_darts = 0;
+uint8_t dart_list[max_darts][7];
+
+
+
+//commands:
+//erase all darts
+//add this dart
+//
+
 
 
 ESP8266WiFiMulti wifiMulti;
@@ -64,7 +77,7 @@ char client_id[30] = "testgun";
 char pubTopic[60] = "nerfgun/testgun/lwt";
 char tagTopic[60] = "nerfgun/testgun/tag";
 char stateTopic[60] = "nerfgun/testgun/state";
-char subTopic[60] = "nerfgun/testgun/power";
+char subTopic[60] = "nerfgun/testgun/cmd";
 
 
 
@@ -88,8 +101,10 @@ void mqtt_cb_onConnect()
 
 void mqtt_cb_onDisconnect()
 {
-  //Serial.printf("MQTT lost\n");
-  mqttConnect();
+    mode_register_darts = false;
+    //Serial.printf("MQTT lost\n");
+    mqttConnect();
+
 }
 
 
@@ -102,6 +117,9 @@ void mqtt_cb_onData(String topic, String data, bool cont)
         analogWrite(mot_a, power);
         digitalWrite(mot_b, LOW);
     }
+    //parse a json command
+    //n_darts = 0   clears the list, is set by command
+    //mode_register_darts is set by command
 }
 
 
@@ -124,17 +142,34 @@ char* to_hex(char* dst, uint8_t* src, int n)
 }
 
 
-bool tag_match(char* uid_hex)
+bool register_dart(uint8_t* uid)
+{
+    if(tag_match(uid))
+    {
+        return true;
+    }
+    else
+    {
+        if(n_darts < max_darts)
+        {
+            memcpy(dart_list[n_darts], uid, 7);
+            n_darts++;
+            return true;
+        }
+    }
+    return false;
+}
+
+
+bool tag_match(uint8_t* tag)
 {
     for(int i=0; i<n_darts; i++)
     {
-        if(0 == strcmp(dart_list[i].dart_uid, uid_hex))
+        if(0 == memcmp(dart_list[i], tag, 7))
         {
-            bool tag_match = (0 == strcmp(dart_list[i].gun_id, client_id));
-            return tag_match;
+            return true;
         }
     }
-    //default to false, the gun has a very limited list of darts
     return false;
 }
 
@@ -175,8 +210,8 @@ void setup(void)
 {
     //choose the names to use
     sprintf(client_id, "nerf%06X", ESP.getChipId());
-    sprintf(pubTopic,"nerfgun/%s/lwt", client_id);
-    sprintf(subTopic,"nerfgun/%s/power", client_id);
+    sprintf(pubTopic, "nerfgun/%s/lwt", client_id);
+    sprintf(subTopic, "nerfgun/%s/cmd", client_id);
     sprintf(tagTopic, "nerfgun/%s/tag", client_id);
     sprintf(stateTopic, "nerfgun/%s/state", client_id);
     sprintf(mqtt_host_string, "mqtt://%s:%s#$s", broker_url, "1883", client_id);
@@ -218,6 +253,7 @@ void loop(void)
     last_loop_timestamp = timestamp;
     timestamp = millis();
 
+
     bool wifi_online = (wifiMulti.run() == WL_CONNECTED);
 
     int rail_voltage = analogRead(interlock_pin);
@@ -227,7 +263,6 @@ void loop(void)
         float rail_filter_alpha_t = rail_filter_alpha * (float)(timestamp - filter_timestamp) / 1000.0;
         rail_voltage_filtered = (((float)rail_voltage * rail_filter_alpha) + rail_voltage_filtered) / (1 + rail_filter_alpha);
     }
-    run_motor(motor_power_max, motor_jam, interlock);
 
     if (nfc.readPassiveTargetID(PN532_MIFARE_ISO14443A, uid, &uidLength))
     {
@@ -240,14 +275,23 @@ void loop(void)
                 mqtt.publish(tagTopic, jsonString, 0, 0);
             }
 
-            motor_jam = !tag_match(uid_hex);
-            run_motor(motor_power_max, motor_jam, interlock);
+            if(mode_register_darts)
+            {
+                register_dart(uid);
+            }
+            else
+            {
+                motor_jam = !tag_match(uid);
+            }
 /*
             Serial.print("uid = ");
             Serial.println(uid_hex);
 */
         }
     }
+
+
+    run_motor(motor_power_max, motor_jam, interlock);
 
     if(timestamp > report_time + report_period)
     {
@@ -258,7 +302,6 @@ void loop(void)
             mqtt.publish(stateTopic, jsonString, 0, 0);
         }
     }
-
 
     mqtt.handle();
 
