@@ -1,13 +1,16 @@
 
 
+
 #include <SPI.h>
 #include <PN532_SPI.h>
 #include <PN532.h>
 #include <NfcAdapter.h>
 
 
-#include <ESP8266MQTTClient.h>
 #include <ESP8266WiFi.h>
+#include <ESP8266WiFiMulti.h>
+
+#include <ESP8266MQTTClient.h>
 
 #include "secrets.h"
 /* defined in secrets.h
@@ -17,15 +20,19 @@ char* broker_url = ""
 */
 char mqtt_host_string[50];
 
+
+ESP8266WiFiMulti wifiMulti;
 MQTTClient mqtt;
 
-int ss_pin = D0;
-int mot_a = D2;
-int mot_b = D1;
-int interlock_pin = A0;
+const int ss_pin = D0;
+const int mot_a = D2;
+const int mot_b = D1;
+const int interlock_pin = A0;
 
-int rail_voltage;
-bool interlock  = false;
+const float rail_filter_alpha = 0.1;
+const int rail_voltage_min = 300;   //minimum plausible raw adc read from the rail
+
+float rail_voltage_filtered = 0;
 
 
 PN532_SPI intf(SPI, ss_pin);
@@ -34,7 +41,7 @@ PN532 nfc = PN532(intf);
 //uint8_t password[4] =  {0x12, 0x34, 0x56, 0x78};
 //uint8_t buf[4];
 uint8_t uid[7];         //store the tag uid
-char uid_hex[20];       //format to hex
+char uid_hex[20];       //format to hex (only 2*7 + 1 bytes used)
 uint8_t uidLength;
 
 // change this during setup, examples here
@@ -45,29 +52,13 @@ char subTopic[60] = "nerfgun/testgun/power";
 
 char jsonString[100]; //to store the formatted json
 
-unsigned long last_wifi_reconnect_attempt = 0;
 
-
-void wifiConnect()
-{
-  WiFi.hostname(client_id);
-  WiFi.mode(WIFI_STA);
-  WiFi.begin(ap_name, ap_pass);
-
-  while(WiFi.status() != WL_CONNECTED)
-  {
-      delay(100);
-      Serial.print(".");
-  }
-  Serial.printf("Connected\n");
-
-}
-
-void cb_onSubscribe(int sub_id)
+void mqtt_cb_onSubscribe(int sub_id)
 {
 }
 
-void cb_onConnect()
+
+void mqtt_cb_onConnect()
 {
     Serial.printf("MQTT reconnected\n");
     mqtt.publish("nerfgun/name", client_id, 0, 0);
@@ -75,15 +66,15 @@ void cb_onConnect()
     mqtt.subscribe(subTopic, 0);
 }
 
-void cb_onDisconnect()
+
+void mqtt_cb_onDisconnect()
 {
-  checkWifi();
-  Serial.printf("MQTT lost\n");
-  delay(10);
+  //Serial.printf("MQTT lost\n");
   mqttConnect();
 }
 
-void cb_onData(String topic, String data, bool cont)
+
+void mqtt_cb_onData(String topic, String data, bool cont)
 {
     Serial.println(topic);
     Serial.println(data);
@@ -91,13 +82,11 @@ void cb_onData(String topic, String data, bool cont)
     if(topic == subTopic)
     {
         int power = data.toInt();
-        //if(power>255) power=255;
         if(power<0) power = 0;
         analogWrite(mot_a, power);
         digitalWrite(mot_b, LOW);
     }
 }
-
 
 
 void mqttConnect()
@@ -106,42 +95,19 @@ void mqttConnect()
 }
 
 
-void checkWifi()
-{
-    if (WiFi.status() != WL_CONNECTED)
-    {
-        unsigned long now = millis();
-        if (now - last_wifi_reconnect_attempt > 20000UL)
-        {
-            Serial.println("Attempting to connect to WiFi");
-            last_wifi_reconnect_attempt = now;
-            wifiConnect();
-        }
-        return;
-    }
-}
-
-
-void publishTag(uint8_t* uid, bool interlock, int rail_voltage)
+void publishTag(uint8_t* uid, bool interlock, float rail_voltage)
 {
     for(uint8_t i=0; i<7; i++)
     {
       uid_hex[(2*i)+0] = "0123456789abcdef"[uid[i] >>  4 ];
       uid_hex[(2*i)+1] = "0123456789abcdef"[uid[i] & 0x0f];
     }
-    uid_hex[16] = '\0'; //null terminate
+    uid_hex[14] = '\0'; //null terminate
 
-    if(interlock)
-    {
-        sprintf(jsonString, "{\"uid\":\"%s\", \"interlock\":%d, \"voltage\":%d}", uid_hex, interlock, rail_voltage);
-    }
-    else
-    {
-        sprintf(jsonString, "{\"uid\":\"%s\", \"interlock\":%d}", uid_hex, interlock);
-    }
+    sprintf(jsonString, "{\"uid\":\"%s\", \"interlock\":%d, \"voltage\":%f}", uid_hex, interlock, rail_voltage);
+
     mqtt.publish(tagTopic, jsonString, 0, 0);
 }
-
 
 
 void setup(void)
@@ -168,42 +134,40 @@ void setup(void)
     nfc.begin();
     nfc.SAMConfig();
 
-    wifiConnect();
-    last_wifi_reconnect_attempt = millis();
+    WiFi.hostname(client_id);
+    WiFi.mode(WIFI_STA);
+    wifiMulti.addAP(ap_name, ap_pass);
 
-    //mqtt.onSecure(cb_onSecure);
-    mqtt.onData(cb_onData);
-    mqtt.onSubscribe(cb_onSubscribe);
-    mqtt.onConnect(cb_onConnect);
-    mqtt.onDisconnect(cb_onDisconnect);
+    //mqtt.onSecure(mqtt_cb_onSecure);
+    mqtt.onData(mqtt_cb_onData);
+    mqtt.onSubscribe(mqtt_cb_onSubscribe);
+    mqtt.onConnect(mqtt_cb_onConnect);
+    mqtt.onDisconnect(mqtt_cb_onDisconnect);
     Serial.printf("Callbacks Set\n");
-    delay(10);
 
     mqttConnect();
-
-
 }
 
 void loop(void)
 {
-    checkWifi();
+    bool wifi_online = (wifiMulti.run() == WL_CONNECTED);
 
-    //Serial.println("wait for a tag");
-    // wait until a tag is present
-    //while (!nfc.readPassiveTargetID(PN532_MIFARE_ISO14443A, uid, &uidLength)){}
-    rail_voltage = analogRead(interlock_pin);
-    interlock = rail_voltage > 300;
+    int rail_voltage = analogRead(interlock_pin);
+    bool interlock = rail_voltage > rail_voltage_min;
+    if(interlock)
+    {
+        rail_voltage_filtered = (((float)rail_voltage * rail_filter_alpha) + rail_voltage_filtered) / (1 + rail_filter_alpha);
+    }
 
     if (nfc.readPassiveTargetID(PN532_MIFARE_ISO14443A, uid, &uidLength))
     {
         if(uidLength == 7)
         {
-            if(rail_voltage > 300)
+
+            if(wifi_online)
             {
-                //analogWrite(mot_a, 50);
-                //digitalWrite(mot_b, LOW);
+                publishTag(uid, interlock, rail_voltage);
             }
-            publishTag(uid, interlock, rail_voltage);
 
             Serial.print("uid = ");
             for(uint8_t i=0; i<uidLength; i++)
