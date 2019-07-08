@@ -10,6 +10,8 @@ if the wrong dart is fired, the gun jams
 #include <PN532.h>
 #include <NfcAdapter.h>
 
+#include <ArduinoJson.h>
+
 #include <ESP8266WiFi.h>
 #include <ESP8266WiFiMulti.h>
 
@@ -26,6 +28,8 @@ const int mot_a = D2;
 const int mot_b = D1;
 const int interlock_pin = A0;
 
+
+const float rail_voltage_max = 1024 / ((6.0/2)/3.3);    //10b adc, 1:2 divider, 3v3 reference, 6V max operating condition
 const float rail_filter_alpha = 0.1;
 const int rail_voltage_min = 300;   //minimum plausible raw adc read from the rail
 float rail_voltage_filtered = 0;
@@ -42,26 +46,16 @@ uint32_t report_time = 0;
 
 bool mode_register_darts = false;
 bool motor_jam = false;   //game mechanic, brake the flywheel
-int motor_power_max = 700;
-int motor_power = 0;
-
+int motor_power_run = 0.7;  //70% is comfortable, 50% feels slow, 30% can fail to fire
+const int motor_power_max = 1023;
 
 const int max_darts = 30;
 int n_darts = 0;
 uint8_t dart_list[max_darts][7];
 
 
-
-//commands:
-//erase all darts
-//add this dart
-//
-
-
-
 ESP8266WiFiMulti wifiMulti;
 MQTTClient mqtt;
-
 
 PN532_SPI intf(SPI, ss_pin);
 PN532 nfc = PN532(intf);
@@ -101,8 +95,9 @@ void mqtt_cb_onConnect()
 
 void mqtt_cb_onDisconnect()
 {
-    mode_register_darts = false;
-    //Serial.printf("MQTT lost\n");
+    //loss of contact, don't register without connection
+    exit_register_mode();
+    Serial.printf("MQTT lost\n");
     mqttConnect();
 
 }
@@ -112,14 +107,37 @@ void mqtt_cb_onData(String topic, String data, bool cont)
 {
     if(topic == subTopic)
     {
-        int power = data.toInt();
-        if(power<0) power = 0;
-        analogWrite(mot_a, power);
-        digitalWrite(mot_b, LOW);
+        StaticJsonDocument<256> doc;
+        DeserializationError error = deserializeJson(doc, data);
+        if (!error) {
+            if(!doc["power_override"].isNull())
+            {
+                int power = doc["power_override"];
+                //apply the value and run the motor
+            }
+
+            if(!doc["clear_darts"].isNull())    //true clears the list
+            {
+                if((bool)doc["clear_darts"])
+                {
+                    n_darts = 0;    //clear the list
+                }
+            }
+
+            if(!doc["register_mode"].isNull())  //true or false to enter or exit
+            {
+                mode_register_darts = doc["register_mode"]; //enter or exit register mode
+            }
+
+            if(!doc["register_dart"].isNull())  //send the hex string of the dart uid
+            {
+                uint8_t tmp_uid[7];
+                register_dart(from_hex(tmp_uid, doc["register_dart"], 7));
+            }
+
+
+        }
     }
-    //parse a json command
-    //n_darts = 0   clears the list, is set by command
-    //mode_register_darts is set by command
 }
 
 
@@ -129,15 +147,26 @@ void mqttConnect()
 }
 
 
+//prints backwards, not important
 //returns dst
 char* to_hex(char* dst, uint8_t* src, int n)
 {
     for(uint8_t i=0; i<n; i++)
     {
-        dst[(2*i)+0] = "0123456789abcdef"[src[i] >>  4 ];
-        dst[(2*i)+1] = "0123456789abcdef"[src[i] & 0x0f];
+        dst[(2*i)+0] = "0123456789abcdef"[src[i] >>  4];
+        dst[(2*i)+1] = "0123456789abcdef"[src[i] & 0xf];
     }
     dst[2*n] = '\0';
+    return dst;
+}
+
+uint8_t* from_hex(uint8_t* dst, const char* src, int n)
+{
+    for(uint8_t i=0; i<n; i++)
+    {
+        dst[i] = ((src[2*i+0] - '0') <<  4) +
+                 ((src[2*i+1] - '0') & 0xf);
+    }
     return dst;
 }
 
@@ -175,8 +204,10 @@ bool tag_match(uint8_t* tag)
 
 
 
-void run_motor(int power, bool jam, bool interlock)
+void run_motor(float power, bool jam, bool interlock)
 {
+    int motor_power = 0;
+
     //if the spin button is released, clear the software jam and power down
     //otherwise, spin up to the target speed
     if(!interlock)
@@ -186,7 +217,7 @@ void run_motor(int power, bool jam, bool interlock)
     }
     else
     {
-        motor_power = power;
+        motor_power = motor_power_max * power * (rail_voltage_max / rail_voltage_filtered);    //compensate battery sag
     }
 
 
@@ -204,6 +235,16 @@ void run_motor(int power, bool jam, bool interlock)
     }
 }
 
+void enter_register_mode()
+{
+    mode_register_darts = true;
+    motor_power_run = 0.5;
+}
+void exit_register_mode()
+{
+    mode_register_darts = false;
+    motor_power_run = 0.7;
+}
 
 
 void setup(void)
@@ -291,14 +332,14 @@ void loop(void)
     }
 
 
-    run_motor(motor_power_max, motor_jam, interlock);
+    run_motor(motor_power_run, motor_jam, interlock);
 
     if(timestamp > report_time + report_period)
     {
         report_time += report_period;
         if(wifi_online)
         {
-            sprintf(jsonString, "{\"interlock\":%d, \"voltage\":%f}", interlock, rail_voltage_filtered);
+            sprintf(jsonString, "{\"interlock\":%d, \"voltage\":%f, \"n_darts\":%d, \"jam\":%d}", interlock, rail_voltage_filtered, n_darts, motor_jam);
             mqtt.publish(stateTopic, jsonString, 0, 0);
         }
     }
