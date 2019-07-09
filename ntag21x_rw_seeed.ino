@@ -27,7 +27,7 @@ const int ss_pin = D0;
 const int mot_a = D2;
 const int mot_b = D1;
 const int interlock_pin = A0;
-
+const int tag_len = 7;
 
 const float rail_voltage_max = 1024 / ((6.0/2)/3.3);    //10b adc, 1:2 divider, 3v3 reference, 6V max operating condition
 const float rail_filter_alpha = 0.1;
@@ -45,13 +45,15 @@ uint32_t report_time = 0;
 
 
 bool mode_register_darts = false;
-bool motor_jam = false;   //game mechanic, brake the flywheel
-int motor_power_run = 0.7;  //70% is comfortable, 50% feels slow, 30% can fail to fire
+const float motor_play_speed = 0.7;
+const float motor_register_speed = 0.5;
 const int motor_power_max = 1023;
+bool motor_jam = false;   //game mechanic, brake the flywheel
+float motor_power_run = 0.7;  //70% is comfortable, 50% feels slow, 30% can fail to fire
 
 const int max_darts = 30;
 int n_darts = 0;
-uint8_t dart_list[max_darts][7];
+uint8_t dart_list[max_darts][tag_len];
 
 
 ESP8266WiFiMulti wifiMulti;
@@ -62,9 +64,9 @@ PN532 nfc = PN532(intf);
 
 //uint8_t password[4] =  {0x12, 0x34, 0x56, 0x78};
 //uint8_t buf[4];
-uint8_t uid[7];         //store the tag uid
-char uid_hex[20];       //format to hex (only 2*7 + 1 bytes used)
-uint8_t uidLength = 7;
+uint8_t uid[tag_len];         //store the tag uid
+char uid_hex[(2*tag_len)+1];
+uint8_t uidLength = tag_len;
 
 // change this during setup, examples here
 char client_id[30] = "testgun";
@@ -131,11 +133,12 @@ void mqtt_cb_onData(String topic, String data, bool cont)
 
             if(!doc["register_dart"].isNull())  //send the hex string of the dart uid
             {
-                uint8_t tmp_uid[7];
-                register_dart(from_hex(tmp_uid, doc["register_dart"], 7));
+                if(strlen(doc["register_dart"]) >= 2*tag_len)
+                {
+                    uint8_t tmp_uid[tag_len];
+                    register_dart(from_hex(tmp_uid, doc["register_dart"], tag_len));
+                }
             }
-
-
         }
     }
 }
@@ -181,7 +184,7 @@ bool register_dart(uint8_t* uid)
     {
         if(n_darts < max_darts)
         {
-            memcpy(dart_list[n_darts], uid, 7);
+            memcpy(dart_list[n_darts], uid, tag_len);
             n_darts++;
             return true;
         }
@@ -194,7 +197,7 @@ bool tag_match(uint8_t* tag)
 {
     for(int i=0; i<n_darts; i++)
     {
-        if(0 == memcmp(dart_list[i], tag, 7))
+        if(0 == memcmp(dart_list[i], tag, tag_len))
         {
             return true;
         }
@@ -238,12 +241,12 @@ void run_motor(float power, bool jam, bool interlock)
 void enter_register_mode()
 {
     mode_register_darts = true;
-    motor_power_run = 0.5;
+    motor_power_run = motor_register_speed;
 }
 void exit_register_mode()
 {
     mode_register_darts = false;
-    motor_power_run = 0.7;
+    motor_power_run = motor_play_speed;
 }
 
 
@@ -255,7 +258,7 @@ void setup(void)
     sprintf(subTopic, "nerfgun/%s/cmd", client_id);
     sprintf(tagTopic, "nerfgun/%s/tag", client_id);
     sprintf(stateTopic, "nerfgun/%s/state", client_id);
-    sprintf(mqtt_host_string, "mqtt://%s:%s#$s", broker_url, "1883", client_id);
+    sprintf(mqtt_host_string, "mqtt://%s:%s#%s", broker_url, "1883", client_id);
 
     pinMode(mot_a, OUTPUT);
     pinMode(mot_b, OUTPUT);
@@ -294,8 +297,16 @@ void loop(void)
     last_loop_timestamp = timestamp;
     timestamp = millis();
 
+    Serial.print("loop start: ");
+    Serial.println(millis());
 
-    bool wifi_online = (wifiMulti.run() == WL_CONNECTED);
+    uint32_t wifi_timeout = 50;
+    bool wifi_online = (wifiMulti.run(50) == WL_CONNECTED);
+    Serial.print("wifi checked: ");
+    Serial.print(wifi_online?"online ":"offline ");
+
+    Serial.println(millis());
+
 
     int rail_voltage = analogRead(interlock_pin);
     bool interlock = rail_voltage > rail_voltage_min;
@@ -305,11 +316,16 @@ void loop(void)
         rail_voltage_filtered = (((float)rail_voltage * rail_filter_alpha) + rail_voltage_filtered) / (1 + rail_filter_alpha);
     }
 
+    Serial.print("adc read: ");
+    Serial.println(millis());
+
+
+
     if (nfc.readPassiveTargetID(PN532_MIFARE_ISO14443A, uid, &uidLength))
     {
-        if(uidLength == 7)
+        if(uidLength == tag_len)
         {
-            to_hex(uid_hex, uid, 7);
+            to_hex(uid_hex, uid, tag_len);
             if(wifi_online)
             {
                 sprintf(jsonString, "{\"uid\":\"%s\"}", uid_hex);
@@ -324,13 +340,16 @@ void loop(void)
             {
                 motor_jam = !tag_match(uid);
             }
-/*
+
             Serial.print("uid = ");
             Serial.println(uid_hex);
-*/
+
         }
     }
 
+
+    Serial.print("nfc read: ");
+    Serial.println(millis());
 
     run_motor(motor_power_run, motor_jam, interlock);
 
@@ -339,15 +358,17 @@ void loop(void)
         report_time += report_period;
         if(wifi_online)
         {
-            sprintf(jsonString, "{\"interlock\":%d, \"voltage\":%f, \"n_darts\":%d, \"jam\":%d}", interlock, rail_voltage_filtered, n_darts, motor_jam);
+            sprintf(jsonString, "{\"interlock\":%d, \"voltage\":%f, \"n_darts\":%d, \"jam\":%d, \"register\":%d}", interlock, rail_voltage_filtered, n_darts, motor_jam, mode_register_darts);
             mqtt.publish(stateTopic, jsonString, 0, 0);
         }
     }
 
-    mqtt.handle();
-
-    //Serial.print("MQTT handled: ");
-    //Serial.println(millis());
+    if(wifi_online)
+    {
+        mqtt.handle();
+        Serial.print("MQTT handled: ");
+        Serial.println(millis());
+    }
 
     // if NTAG21x enables r/w protection, uncomment the following line 
     // nfc.ntag21x_auth(password);
