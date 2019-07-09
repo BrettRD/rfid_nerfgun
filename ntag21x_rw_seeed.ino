@@ -13,7 +13,6 @@ if the wrong dart is fired, the gun jams
 #include <ArduinoJson.h>
 
 #include <ESP8266WiFi.h>
-#include <ESP8266WiFiMulti.h>
 
 #include <ESP8266MQTTClient.h>
 
@@ -56,7 +55,6 @@ int n_darts = 0;
 uint8_t dart_list[max_darts][tag_len];
 
 
-ESP8266WiFiMulti wifiMulti;
 MQTTClient mqtt;
 bool mqtt_connected = false;  //the library does not expose mqtt.connected()
 
@@ -243,7 +241,8 @@ void run_motor(float power, bool jam, bool interlock)
     }
     else
     {
-        motor_power = motor_power_max * power * (rail_voltage_max / rail_voltage_filtered);    //compensate battery sag
+        float battery_compensation = (rail_voltage_max / rail_voltage_filtered);
+        motor_power = motor_power_max * power * battery_compensation;
     }
 
 
@@ -352,7 +351,7 @@ void loop(void)
 
 
 
-    if (nfc.readPassiveTargetID(PN532_MIFARE_ISO14443A, uid, &uidLength))
+    if (nfc.readPassiveTargetID(PN532_MIFARE_ISO14443A, uid, &uidLength, 100, false))
     {
         if(uidLength == tag_len)
         {
