@@ -58,15 +58,20 @@ uint8_t dart_list[max_darts][tag_len];
 
 ESP8266WiFiMulti wifiMulti;
 MQTTClient mqtt;
+bool mqtt_connected = false;  //the library does not expose mqtt.connected()
+
 
 PN532_SPI intf(SPI, ss_pin);
 PN532 nfc = PN532(intf);
 
 //uint8_t password[4] =  {0x12, 0x34, 0x56, 0x78};
 //uint8_t buf[4];
-uint8_t uid[tag_len];         //store the tag uid
+
+uint8_t uid[tag_len] = {0,0,0,0,0,0,0};         //store the tag uid
 char uid_hex[(2*tag_len)+1];
 uint8_t uidLength = tag_len;
+uint8_t last_uid[tag_len] = {0,0,0,0,0,0,0};  //prevent mqtt from overloading
+
 
 // change this during setup, examples here
 char client_id[30] = "testgun";
@@ -80,6 +85,23 @@ char subTopic[60] = "nerfgun/testgun/cmd";
 char mqtt_host_string[50];
 char jsonString[100]; //to store the formatted json
 
+unsigned long last_wifi_reconnect_attempt = 0;
+
+
+void wifiConnect()
+{
+    WiFi.hostname(client_id);
+    WiFi.mode(WIFI_STA);
+    WiFi.begin(ap_name, ap_pass);
+}
+
+
+bool checkWifi()
+{
+    return WiFi.status() == WL_CONNECTED;
+}
+
+
 
 void mqtt_cb_onSubscribe(int sub_id)
 {
@@ -88,6 +110,7 @@ void mqtt_cb_onSubscribe(int sub_id)
 
 void mqtt_cb_onConnect()
 {
+    mqtt_connected = true;
     Serial.printf("MQTT reconnected\n");
     mqtt.publish("nerfgun/name", client_id, 0, 0);
     mqtt.publish(pubTopic, "{\"online\":true}", 0, 0);
@@ -97,7 +120,7 @@ void mqtt_cb_onConnect()
 
 void mqtt_cb_onDisconnect()
 {
-    //loss of contact, don't register without connection
+    mqtt_connected = false;
     exit_register_mode();
     Serial.printf("MQTT lost\n");
     mqttConnect();
@@ -275,9 +298,13 @@ void setup(void)
     nfc.begin();
     nfc.SAMConfig();
 
-    WiFi.hostname(client_id);
-    WiFi.mode(WIFI_STA);
-    wifiMulti.addAP(ap_name, ap_pass);
+//    WiFi.hostname(client_id);
+//    WiFi.mode(WIFI_STA);
+//    wifiMulti.addAP(ap_name, ap_pass);
+    wifiConnect();
+    last_wifi_reconnect_attempt = millis();
+
+
 
     //mqtt.onSecure(mqtt_cb_onSecure);
     mqtt.onData(mqtt_cb_onData);
@@ -287,6 +314,9 @@ void setup(void)
     Serial.printf("Callbacks Set\n");
 
     mqttConnect();
+
+    mqtt.handle();
+    mqtt.handle();
 }
 
 
@@ -294,14 +324,15 @@ void setup(void)
 
 void loop(void)
 {
+
     last_loop_timestamp = timestamp;
     timestamp = millis();
 
     Serial.print("loop start: ");
     Serial.println(millis());
 
-    uint32_t wifi_timeout = 50;
-    bool wifi_online = (wifiMulti.run(50) == WL_CONNECTED);
+    bool wifi_online = checkWifi();
+
     Serial.print("wifi checked: ");
     Serial.print(wifi_online?"online ":"offline ");
 
@@ -326,10 +357,16 @@ void loop(void)
         if(uidLength == tag_len)
         {
             to_hex(uid_hex, uid, tag_len);
-            if(wifi_online)
+            if(wifi_online && mqtt_connected)
             {
-                sprintf(jsonString, "{\"uid\":\"%s\"}", uid_hex);
-                mqtt.publish(tagTopic, jsonString, 0, 0);
+                if(0 != memcmp(last_uid, uid, tag_len)) //publish once
+                {
+                    sprintf(jsonString, "{\"uid\":\"%s\"}", uid_hex);
+                    mqtt.publish(tagTopic, jsonString, 0, 0);
+                    memcpy(last_uid, uid, tag_len);
+                    Serial.println("send dart");
+
+                }
             }
 
             if(mode_register_darts)
@@ -353,21 +390,24 @@ void loop(void)
 
     run_motor(motor_power_run, motor_jam, interlock);
 
-    if(timestamp > report_time + report_period)
+
+    mqtt.handle();  //this will reconnect when the TCP socket comes up
+
+    Serial.print("MQTT handled: ");
+    Serial.print(mqtt_connected ? "online " : "offline ");
+    Serial.println(millis());
+
+
+    if(mqtt_connected)
     {
-        report_time += report_period;
-        if(wifi_online)
+        if(timestamp - report_time > report_period)
         {
+            report_time = timestamp;
             sprintf(jsonString, "{\"interlock\":%d, \"voltage\":%f, \"n_darts\":%d, \"jam\":%d, \"register\":%d}", interlock, rail_voltage_filtered, n_darts, motor_jam, mode_register_darts);
             mqtt.publish(stateTopic, jsonString, 0, 0);
-        }
-    }
+            Serial.println("MQTT report");
 
-    if(wifi_online)
-    {
-        mqtt.handle();
-        Serial.print("MQTT handled: ");
-        Serial.println(millis());
+        }
     }
 
     // if NTAG21x enables r/w protection, uncomment the following line 
