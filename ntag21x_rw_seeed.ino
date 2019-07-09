@@ -8,12 +8,10 @@ if the wrong dart is fired, the gun jams
 #include <SPI.h>
 #include <PN532_SPI.h>
 #include <PN532.h>
-#include <NfcAdapter.h>
 
 #include <ArduinoJson.h>
 
 #include <ESP8266WiFi.h>
-
 #include <ESP8266MQTTClient.h>
 
 #include "secrets.h"
@@ -39,8 +37,10 @@ uint32_t timestamp = 0;
 
 uint32_t filter_timestamp = 0;
 
-uint32_t report_period = 2000;
-uint32_t report_time = 0;
+uint32_t mqtt_report_period = 2000;
+uint32_t mqtt_report_time = 0;
+uint32_t dart_forget_period = 1000;
+uint32_t dart_forget_time = 0;
 
 
 bool mode_register_darts = false;
@@ -58,12 +58,8 @@ uint8_t dart_list[max_darts][tag_len];
 MQTTClient mqtt;
 bool mqtt_connected = false;  //the library does not expose mqtt.connected()
 
-
 PN532_SPI intf(SPI, ss_pin);
 PN532 nfc = PN532(intf);
-
-//uint8_t password[4] =  {0x12, 0x34, 0x56, 0x78};
-//uint8_t buf[4];
 
 uint8_t uid[tag_len] = {0,0,0,0,0,0,0};         //store the tag uid
 char uid_hex[(2*tag_len)+1];
@@ -79,11 +75,8 @@ char stateTopic[60] = "nerfgun/testgun/state";
 char subTopic[60] = "nerfgun/testgun/cmd";
 
 
-
 char mqtt_host_string[50];
 char jsonString[100]; //to store the formatted json
-
-unsigned long last_wifi_reconnect_attempt = 0;
 
 
 void wifiConnect()
@@ -132,13 +125,8 @@ void mqtt_cb_onData(String topic, String data, bool cont)
     {
         StaticJsonDocument<256> doc;
         DeserializationError error = deserializeJson(doc, data);
-        if (!error) {
-            if(!doc["power_override"].isNull())
-            {
-                int power = doc["power_override"];
-                //apply the value and run the motor
-            }
-
+        if (!error)
+        {
             if(!doc["clear_darts"].isNull())    //true clears the list
             {
                 if((bool)doc["clear_darts"])
@@ -234,15 +222,14 @@ void run_motor(float power, bool jam, bool interlock)
 
     //if the spin button is released, clear the software jam and power down
     //otherwise, spin up to the target speed
-    if(!interlock)
-    {
-        jam = false;
-        motor_power = 0;
-    }
-    else
+    if(interlock)
     {
         float battery_compensation = (rail_voltage_max / rail_voltage_filtered);
         motor_power = motor_power_max * power * battery_compensation;
+    }
+    else
+    {
+        motor_power = 0;
     }
 
 
@@ -297,13 +284,7 @@ void setup(void)
     nfc.begin();
     nfc.SAMConfig();
 
-//    WiFi.hostname(client_id);
-//    WiFi.mode(WIFI_STA);
-//    wifiMulti.addAP(ap_name, ap_pass);
     wifiConnect();
-    last_wifi_reconnect_attempt = millis();
-
-
 
     //mqtt.onSecure(mqtt_cb_onSecure);
     mqtt.onData(mqtt_cb_onData);
@@ -338,12 +319,18 @@ void loop(void)
     Serial.println(millis());
 
 
-    int rail_voltage = analogRead(interlock_pin);
-    bool interlock = rail_voltage > rail_voltage_min;
+    int rail_voltage_raw = analogRead(interlock_pin);
+    bool interlock = rail_voltage_raw > rail_voltage_min;
+
     if(interlock)
     {
         float rail_filter_alpha_t = rail_filter_alpha * (float)(timestamp - filter_timestamp) / 1000.0;
-        rail_voltage_filtered = (((float)rail_voltage * rail_filter_alpha) + rail_voltage_filtered) / (1 + rail_filter_alpha);
+        rail_voltage_filtered = (((float)rail_voltage_raw * rail_filter_alpha) + rail_voltage_filtered) / (1 + rail_filter_alpha);
+        filter_timestamp = timestamp;
+    }
+    else
+    {
+        motor_jam = false;
     }
 
     Serial.print("adc read: ");
@@ -364,7 +351,7 @@ void loop(void)
                     mqtt.publish(tagTopic, jsonString, 0, 0);
                     memcpy(last_uid, uid, tag_len);
                     Serial.println("send dart");
-
+                    dart_forget_time = timestamp;
                 }
             }
 
@@ -380,6 +367,15 @@ void loop(void)
             Serial.print("uid = ");
             Serial.println(uid_hex);
 
+        }
+    }
+    else
+    {
+        //re-send the darts every second
+        if(timestamp - dart_forget_time > dart_forget_period)
+        {
+            dart_forget_time = timestamp;
+            memset(last_uid, 0, tag_len);
         }
     }
 
@@ -399,32 +395,13 @@ void loop(void)
 
     if(mqtt_connected)
     {
-        if(timestamp - report_time > report_period)
+        if(timestamp - mqtt_report_time > mqtt_report_period)
         {
-            report_time = timestamp;
+            mqtt_report_time = timestamp;
             sprintf(jsonString, "{\"interlock\":%d, \"voltage\":%f, \"n_darts\":%d, \"jam\":%d, \"register\":%d}", interlock, rail_voltage_filtered, n_darts, motor_jam, mode_register_darts);
             mqtt.publish(stateTopic, jsonString, 0, 0);
             Serial.println("MQTT report");
 
         }
     }
-
-    // if NTAG21x enables r/w protection, uncomment the following line 
-    // nfc.ntag21x_auth(password);
-/*
-    nfc.mifareultralight_ReadPage(3, buf);
-    int capacity = buf[2] * 8;
-    Serial.print(F("Tag capacity "));
-    Serial.print(capacity);
-    Serial.println(F(" bytes"));
-
-    for (int i=4; i<capacity/4; i++) {
-        nfc.mifareultralight_ReadPage(i, buf);
-        nfc.PrintHexChar(buf, 4);
-    }
-
-    // wait until the tag is removed
-    while (nfc.readPassiveTargetID(PN532_MIFARE_ISO14443A, uid, &uidLength)) {
-    }
-*/
 }
