@@ -40,7 +40,7 @@ uint32_t timestamp = 0;
 
 uint32_t filter_timestamp = 0;
 
-uint32_t report_period = 1000;
+uint32_t report_period = 2000;
 uint32_t report_time = 0;
 
 
@@ -172,15 +172,13 @@ void mqttConnect()
     mqtt.begin(mqtt_host_string, {.lwtTopic = pubTopic, .lwtMsg = "{\"online\":false}", .lwtQos = 0, .lwtRetain = 0});
 }
 
-
-//prints backwards, not important
 //returns dst
 char* to_hex(char* dst, uint8_t* src, int n)
 {
     for(uint8_t i=0; i<n; i++)
     {
-        dst[(2*i)+0] = "0123456789abcdef"[src[i] >>  4];
-        dst[(2*i)+1] = "0123456789abcdef"[src[i] & 0xf];
+        dst[(2*i)+0] = "0123456789abcdef"[src[(n-1)-i] >>  4];
+        dst[(2*i)+1] = "0123456789abcdef"[src[(n-1)-i] & 0xf];
     }
     dst[2*n] = '\0';
     return dst;
@@ -190,8 +188,10 @@ uint8_t* from_hex(uint8_t* dst, const char* src, int n)
 {
     for(uint8_t i=0; i<n; i++)
     {
-        dst[i] = ((src[2*i+0] - '0') <<  4) +
-                 ((src[2*i+1] - '0') & 0xf);
+        char src_copy[3];
+        src_copy[2] = '\0';
+        memcpy(src_copy, &src[2*i], 2);
+        dst[(n-1)-i] = strtol(src_copy, 0, 16);
     }
     return dst;
 }
@@ -314,9 +314,9 @@ void setup(void)
     Serial.printf("Callbacks Set\n");
 
     mqttConnect();
+    mqtt.handle();
+    mqtt.handle();
 
-    mqtt.handle();
-    mqtt.handle();
 }
 
 
