@@ -148,6 +148,15 @@ void mqtt_cb_onData(String topic, String data, bool cont)
                     register_dart(from_hex(tmp_uid, doc["register_dart"], tag_len));
                 }
             }
+
+            if(!doc["unregister_dart"].isNull())  //send the hex string of the dart uid
+            {
+                if(strlen(doc["unregister_dart"]) >= 2*tag_len)
+                {
+                    uint8_t tmp_uid[tag_len];
+                    unregister_dart(from_hex(tmp_uid, doc["unregister_dart"], tag_len));
+                }
+            }
         }
     }
 }
@@ -183,9 +192,9 @@ uint8_t* from_hex(uint8_t* dst, const char* src, int n)
 }
 
 
-bool register_dart(uint8_t* uid)
+bool register_dart(uint8_t* tag)
 {
-    if(tag_match(uid))
+    if(tag_match(tag))
     {
         return true;
     }
@@ -193,7 +202,7 @@ bool register_dart(uint8_t* uid)
     {
         if(n_darts < max_darts)
         {
-            memcpy(dart_list[n_darts], uid, tag_len);
+            memcpy(dart_list[n_darts], tag, tag_len);
             n_darts++;
             return true;
         }
@@ -201,6 +210,21 @@ bool register_dart(uint8_t* uid)
     return false;
 }
 
+bool unregister_dart(uint8_t* tag)
+{
+    for(int i=0; i<n_darts; i++)
+    {
+        //look for the given dart
+        if(0 == memcmp(dart_list[i], tag, tag_len))
+        {
+            //copy the last dart into the place to remove
+            memcpy(dart_list[i], dart_list[n_darts], tag_len);
+            n_darts--;  //delete the last place
+            return true;
+        }
+    }
+    return false;
+}
 
 bool tag_match(uint8_t* tag)
 {
