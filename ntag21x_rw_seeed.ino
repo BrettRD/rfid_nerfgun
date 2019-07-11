@@ -315,7 +315,6 @@ void loop(void)
 
     Serial.print("wifi checked: ");
     Serial.print(wifi_online?"online ":"offline ");
-
     Serial.println(millis());
 
 
@@ -335,6 +334,9 @@ void loop(void)
 
     Serial.print("adc read: ");
     Serial.println(millis());
+
+    nfc.begin();
+    nfc.SAMConfig();
 
 
 
