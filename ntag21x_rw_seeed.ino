@@ -45,7 +45,7 @@ uint32_t dart_forget_time = 0;
 
 bool mode_register_darts = false;
 const float motor_play_speed = 0.7;
-const float motor_register_speed = 0.5;
+const float motor_register_speed = 0.7;
 const int motor_power_max = 1023;
 bool motor_jam = false;   //game mechanic, brake the flywheel
 float motor_power_run = 0.7;  //70% is comfortable, 50% feels slow, 30% can fail to fire
