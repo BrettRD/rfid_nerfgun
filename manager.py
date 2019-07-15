@@ -5,8 +5,7 @@ import json
 client = mqtt.Client()
 
 
-# fails if base topic includes '/'
-base_topic = "nerfgun"
+base_topic = "nerfgun/"
 
 scanners = dict()
 
@@ -16,22 +15,24 @@ def on_connect(client, userdata, flags, rc):
     print("Connected with result code "+str(rc))
     # Subscribing in on_connect() means that if we lose the connection and
     # reconnect then subscriptions will be renewed.
-    client.subscribe(base_topic + "/+/state")   # the state of the scanner
-    client.subscribe(base_topic + "/+/tag")     # the tags being read
-    client.subscribe(base_topic + "/+/lwt")     # the online/offline messages
-    client.subscribe(base_topic + "/+/cmd")     # commands being sent to the scanners
+    client.subscribe(base_topic + "+/state")   # the state of the scanner
+    client.subscribe(base_topic + "+/tag")     # the tags being read
+    client.subscribe(base_topic + "+/lwt")     # the online/offline messages
+    client.subscribe(base_topic + "+/cmd")     # commands being sent to the scanners
 
 
 
 # The callback for when a PUBLISH message is received from the server.
 def on_message(client, userdata, msg):
-    split_topic = msg.topic.split('/')
     
-    if split_topic[0] == base_topic:
-        if split_topic[1] != "name":    #ignore the name message
+    if msg.topic.startswith(base_topic):    # only look under the base topic
+        message_topic = msg.topic[len(base_topic):]
+        split_topic = message_topic.split('/')
 
-            # read the name of the scanner
-            scanner_name = split_topic[1]  #this will catch the lwt "online" message too
+        if split_topic[0] != "name":    #ignore the name message
+            scanner_name = split_topic[0]  #this will catch the lwt "online" message too
+            subtopic = split_topic[1]
+
             if not scanner_name in scanners:
                 print("found new scanner: " + scanner_name + " resetting tag list")
                 scanners[scanner_name] = dict()
@@ -41,7 +42,6 @@ def on_message(client, userdata, msg):
 
             message = json.loads(msg.payload)   #parse the message
 
-            subtopic = split_topic[2]
 
 
             if subtopic == "tag":
@@ -66,18 +66,16 @@ def on_message(client, userdata, msg):
 
 
 def stop_register_mode(scanner_name):
-    topic = base_topic + "/" + scanner_name + "/cmd"
+    topic = base_topic + scanner_name + "/cmd"
     client.publish(topic, "{\"register_mode\":false}")
 
 def start_register_mode(scanner_name):
-    topic = base_topic + "/" + scanner_name + "/cmd"
+    topic = base_topic + scanner_name + "/cmd"
     client.publish(topic, "{\"register_mode\":true}")
 
 def reset_scanner(scanner_name):
-    topic = base_topic + "/" + scanner_name + "/cmd"
+    topic = base_topic + scanner_name + "/cmd"
     client.publish(topic, "{\"clear_darts\":true}")
-
-
 
 
 def main():
